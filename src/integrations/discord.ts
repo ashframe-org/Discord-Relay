@@ -20,7 +20,9 @@ import {
 import { createLogger, type Logger } from "../logger.js";
 import {
   cleanUsername,
+  describeMessageExtras,
   formatMessage,
+  isBotUsername,
   shouldRelayEvent,
 } from "../messageFormatter.js";
 import type { ChatMessage, Config, LogLevel } from "../types.js";
@@ -162,7 +164,7 @@ export class DiscordIntegration implements BaseIntegration {
     if (
       chatMessage.type === "chat" &&
       this.botNormalizedName.length > 0 &&
-      chatMessage.username.toLowerCase() === this.botNormalizedName
+      isBotUsername(chatMessage.username, this.botNormalizedName)
     ) {
       return;
     }
@@ -240,7 +242,22 @@ export class DiscordIntegration implements BaseIntegration {
     }
 
     const normalizedContent = collapseWhitespace(message.cleanContent);
-    if (normalizedContent.length === 0) {
+
+    // Describe any non-text content (images, files, embeds, stickers) so an
+    // attachment-only message is still relayed instead of being dropped.
+    const extras = describeMessageExtras({
+      attachments: message.attachments.map((attachment) => ({
+        name: attachment.name ?? "file",
+        contentType: attachment.contentType ?? null,
+      })),
+      embeds: message.embeds.map((embed) => ({
+        title: embed.title ?? null,
+        url: embed.url ?? null,
+      })),
+      stickerNames: message.stickers.map((sticker) => sticker.name),
+    });
+
+    if (normalizedContent.length === 0 && !extras) {
       return;
     }
 
@@ -262,16 +279,24 @@ export class DiscordIntegration implements BaseIntegration {
     const name = this.resolveDiscordDisplayName(message);
     const color = this.resolveDiscordHexColor(message);
 
+    // Combine text and any attachment/embed/sticker description.
+    const body =
+      normalizedContent.length > 0 && extras
+        ? `${normalizedContent} (${extras})`
+        : normalizedContent.length > 0
+          ? normalizedContent
+          : (extras ?? "");
+
     let payload =
       color && color !== "#FFFFFF"
-        ? `${color}${name}${DEFAULT_CUBYZ_COLOR_RESET}: ${normalizedContent}`
-        : `${name}: ${normalizedContent}`;
+        ? `${color}${name}${DEFAULT_CUBYZ_COLOR_RESET}: ${body}`
+        : `${name}: ${body}`;
 
     if (this.config.discord.enableReplies && message.reference?.messageId) {
       const referencedMsg = this.messageCache.get(message.reference.messageId);
       if (referencedMsg) {
         const replyPrefix = `replying to ${referencedMsg.rawUsername}: *"${referencedMsg.content}"*`;
-        const fullMessage = `${replyPrefix} - ${normalizedContent}`;
+        const fullMessage = `${replyPrefix} - ${body}`;
         payload =
           color && color !== "#FFFFFF"
             ? `${color}${name}${DEFAULT_CUBYZ_COLOR_RESET}: ${fullMessage}`

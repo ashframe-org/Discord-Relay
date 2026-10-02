@@ -1,6 +1,11 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import { cleanUsername, formatMessage } from "../src/messageFormatter.js";
+import {
+  cleanUsername,
+  describeMessageExtras,
+  formatMessage,
+  isBotUsername,
+} from "../src/messageFormatter.js";
 import type { ChatMessage, Config } from "../src/types.js";
 
 const baseConfig: Config = {
@@ -54,6 +59,21 @@ test("cleanUsername removes Cubyz markdown characters", () => {
   const raw = "user~_[]name";
   const cleaned = cleanUsername(raw);
   assert.equal(cleaned, "username");
+});
+
+test("cleanUsername strips a season badge tag", () => {
+  const raw = "§#9a9a9a[§#e6e6e6S2§#9a9a9a] §#cfcfcfDiscord";
+  const cleaned = cleanUsername(raw);
+  assert.equal(cleaned, "Discord");
+});
+
+test("isBotUsername matches the bot even when badge-decorated", () => {
+  assert.equal(isBotUsername("Discord", "discord"), true);
+  assert.equal(isBotUsername("S2 Discord", "discord"), true);
+  assert.equal(isBotUsername("adm Discord", "discord"), true);
+  assert.equal(isBotUsername("DiscordUser", "discord"), false);
+  assert.equal(isBotUsername("Someone", "discord"), false);
+  assert.equal(isBotUsername("Discord", ""), false);
 });
 
 test("cleanUsername removes disallowed punctuation", () => {
@@ -143,4 +163,74 @@ test("censors configured chat words", () => {
 
   const result = formatMessage(message, config);
   assert.equal(result, "**Player123**: This ||beep|| is safe");
+});
+
+test("describeMessageExtras returns null when there is no extra content", () => {
+  assert.equal(
+    describeMessageExtras({ attachments: [], embeds: [], stickerNames: [] }),
+    null,
+  );
+});
+
+test("describeMessageExtras names a single image by filename", () => {
+  const result = describeMessageExtras({
+    attachments: [{ name: "cat.png", contentType: "image/png" }],
+    embeds: [],
+    stickerNames: [],
+  });
+  assert.equal(result, "sent image: cat.png");
+});
+
+test("describeMessageExtras classifies by extension when contentType is null", () => {
+  assert.equal(
+    describeMessageExtras({
+      attachments: [{ name: "mod.zip", contentType: null }],
+      embeds: [],
+      stickerNames: [],
+    }),
+    "sent file: mod.zip",
+  );
+  assert.equal(
+    describeMessageExtras({
+      attachments: [{ name: "clip.mp4", contentType: null }],
+      embeds: [],
+      stickerNames: [],
+    }),
+    "sent video: clip.mp4",
+  );
+});
+
+test("describeMessageExtras summarises many attachments by kind", () => {
+  const result = describeMessageExtras({
+    attachments: [
+      { name: "a.png", contentType: "image/png" },
+      { name: "b.png", contentType: "image/png" },
+      { name: "c.zip", contentType: "application/zip" },
+      { name: "d.zip", contentType: null },
+    ],
+    embeds: [],
+    stickerNames: [],
+  });
+  assert.equal(result, "sent 4 attachments (2 images, 2 files)");
+});
+
+test("describeMessageExtras includes embeds and stickers", () => {
+  const result = describeMessageExtras({
+    attachments: [],
+    embeds: [{ title: "Some Link", url: "https://example.com" }],
+    stickerNames: ["Wave"],
+  });
+  assert.equal(result, "sent an embed: Some Link; sent a sticker: Wave");
+});
+
+test("describeMessageExtras truncates long filenames", () => {
+  const longName = `${"x".repeat(100)}.png`;
+  const result = describeMessageExtras({
+    attachments: [{ name: longName, contentType: "image/png" }],
+    embeds: [],
+    stickerNames: [],
+  });
+  assert.ok(result !== null);
+  assert.ok(result.length < longName.length);
+  assert.ok(result.endsWith("…"));
 });
