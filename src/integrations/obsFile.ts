@@ -33,7 +33,10 @@ export class ObsFileIntegration implements BaseIntegration {
 
   async start(): Promise<void> {
     if (!this.filePath) {
-      this.log("warn", "OBS file integration is enabled but no path is configured.");
+      this.log(
+        "warn",
+        "OBS file integration is enabled but no path is configured.",
+      );
       return;
     }
     await this.write();

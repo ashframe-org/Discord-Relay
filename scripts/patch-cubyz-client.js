@@ -8,18 +8,27 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-const file = path.join(root, "..", "node_modules", "cubyz-node-client", "dist", "constants.js");
+const file = path.join(
+  root,
+  "..",
+  "node_modules",
+  "cubyz-node-client",
+  "dist",
+  "constants.js",
+);
 
 let text;
 try {
-	text = fs.readFileSync(file, "utf8");
+  text = fs.readFileSync(file, "utf8");
 } catch {
-	console.log("[patch-cubyz-client] cubyz-node-client not installed, skipping.");
-	process.exit(0);
+  console.log(
+    "[patch-cubyz-client] cubyz-node-client not installed, skipping.",
+  );
+  process.exit(0);
 }
 if (text.includes("RELOAD:")) {
-	console.log("[patch-cubyz-client] already patched, skipping.");
-	process.exit(0);
+  console.log("[patch-cubyz-client] already patched, skipping.");
+  process.exit(0);
 }
 const oldBlock = `    SIGNATURE_RESPONSE: 3,
     ASSETS: 4,
@@ -29,8 +38,10 @@ const newBlock = `    SIGNATURE_RESPONSE: 3,
     ASSETS: 5,
     SERVER_DATA: 6,`;
 if (!text.includes(oldBlock)) {
-	console.error("[patch-cubyz-client] expected handshake block not found, NOT patched.");
-	process.exit(1);
+  console.error(
+    "[patch-cubyz-client] expected handshake block not found, NOT patched.",
+  );
+  process.exit(1);
 }
 fs.writeFileSync(file, text.replace(oldBlock, newBlock));
 console.log("[patch-cubyz-client] handshake states renumbered for 0.4.0.");

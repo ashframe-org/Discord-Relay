@@ -12,8 +12,8 @@ import type {
   CubyzListSiteConfig,
   EventType,
   IntegrationConfig,
-  ObsFileConfig,
   LogLevel,
+  ObsFileConfig,
 } from "./types.js";
 
 const DEFAULT_EVENTS: EventType[] = ["join", "leave", "death", "chat"];

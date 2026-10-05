@@ -1,7 +1,12 @@
 import type { Gamemode } from "cubyz-node-client";
 import type { BotConnectionManager } from "../botConnection.js";
 import { createLogger, type Logger } from "../logger.js";
-import type { ChatMessage, Config, CubyzListSiteConfig, LogLevel } from "../types.js";
+import type {
+  ChatMessage,
+  Config,
+  CubyzListSiteConfig,
+  LogLevel,
+} from "../types.js";
 import type { BaseIntegration, IntegrationStatusContext } from "./base.js";
 
 export class CubyzListSiteIntegration implements BaseIntegration {
@@ -28,7 +33,10 @@ export class CubyzListSiteIntegration implements BaseIntegration {
 
   async start(): Promise<void> {
     if (!this.config.token) {
-      this.log("warn", "Directory integration is enabled but no relay token is configured.");
+      this.log(
+        "warn",
+        "Directory integration is enabled but no relay token is configured.",
+      );
       return;
     }
     await this.sendUpdate();
