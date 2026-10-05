@@ -12,6 +12,7 @@ import type {
   CubyzListSiteConfig,
   EventType,
   IntegrationConfig,
+  ObsFileConfig,
   LogLevel,
 } from "./types.js";
 
@@ -233,8 +234,21 @@ function applyDefaults(partial: Partial<Config>): Config {
       ) || undefined,
   };
 
+  const obsFile: ObsFileConfig = {
+    enabled:
+      typeof partial.integration?.obsFile?.enabled === "boolean"
+        ? partial.integration.obsFile.enabled
+        : false,
+    path: coerceString(partial.integration?.obsFile?.path, ""),
+    format: coerceString(
+      partial.integration?.obsFile?.format,
+      "Players online: {count}",
+    ),
+  };
+
   const integration: IntegrationConfig = {
     cubyzlistSite,
+    obsFile,
   };
 
   const chatPatterns: ChatPatterns = {

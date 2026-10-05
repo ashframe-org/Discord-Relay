@@ -36,8 +36,15 @@ export interface CubyzListSiteConfig {
   customClientDownloadUrl?: string;
 }
 
+export interface ObsFileConfig {
+  enabled: boolean;
+  path: string;
+  format: string;
+}
+
 export interface IntegrationConfig {
   cubyzlistSite: CubyzListSiteConfig;
+  obsFile: ObsFileConfig;
 }
 
 export interface Config {

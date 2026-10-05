@@ -1,6 +1,8 @@
 import type { Gamemode } from "cubyz-node-client";
 import type {
   ApplicationCommand,
+  ChatInputApplicationCommandData,
+  ChatInputCommandInteraction,
   Client,
   Interaction,
   Message,
@@ -9,7 +11,7 @@ import type {
   PartialUser,
   User,
 } from "discord.js";
-import { Events, MessageFlags } from "discord.js";
+import { ApplicationCommandOptionType, Events, MessageFlags } from "discord.js";
 import type { BotConnectionManager } from "../botConnection.js";
 import {
   cleanup as cleanupDiscordClient,
@@ -20,7 +22,9 @@ import {
 import { createLogger, type Logger } from "../logger.js";
 import {
   cleanUsername,
+  describeMessageExtras,
   formatMessage,
+  isBotUsername,
   shouldRelayEvent,
 } from "../messageFormatter.js";
 import type { ChatMessage, Config, LogLevel } from "../types.js";
@@ -162,7 +166,7 @@ export class DiscordIntegration implements BaseIntegration {
     if (
       chatMessage.type === "chat" &&
       this.botNormalizedName.length > 0 &&
-      chatMessage.username.toLowerCase() === this.botNormalizedName
+      isBotUsername(chatMessage.username, this.botNormalizedName)
     ) {
       return;
     }
@@ -240,7 +244,26 @@ export class DiscordIntegration implements BaseIntegration {
     }
 
     const normalizedContent = collapseWhitespace(message.cleanContent);
-    if (normalizedContent.length === 0) {
+
+    // Describe any non-text content (images, files, embeds, stickers) so an
+    // attachment-only message is still relayed instead of being dropped.
+    const extras = describeMessageExtras({
+      attachments: message.attachments.map((attachment) => ({
+        name: attachment.name ?? "file",
+        contentType: attachment.contentType ?? null,
+      })),
+      embeds: message.embeds.map((embed) => ({
+        title: embed.title ?? null,
+        url: embed.url ?? null,
+      })),
+      stickerNames: message.stickers.map((sticker) => sticker.name),
+    });
+
+    if (normalizedContent.length === 0 && !extras) {
+      return;
+    }
+
+    if (await this.guardPublicLinkCode(normalizedContent, message)) {
       return;
     }
 
@@ -262,16 +285,24 @@ export class DiscordIntegration implements BaseIntegration {
     const name = this.resolveDiscordDisplayName(message);
     const color = this.resolveDiscordHexColor(message);
 
+    // Combine text and any attachment/embed/sticker description.
+    const body =
+      normalizedContent.length > 0 && extras
+        ? `${normalizedContent} (${extras})`
+        : normalizedContent.length > 0
+          ? normalizedContent
+          : (extras ?? "");
+
     let payload =
       color && color !== "#FFFFFF"
-        ? `${color}${name}${DEFAULT_CUBYZ_COLOR_RESET}: ${normalizedContent}`
-        : `${name}: ${normalizedContent}`;
+        ? `${color}${name}${DEFAULT_CUBYZ_COLOR_RESET}: ${body}`
+        : `${name}: ${body}`;
 
     if (this.config.discord.enableReplies && message.reference?.messageId) {
       const referencedMsg = this.messageCache.get(message.reference.messageId);
       if (referencedMsg) {
         const replyPrefix = `replying to ${referencedMsg.rawUsername}: *"${referencedMsg.content}"*`;
-        const fullMessage = `${replyPrefix} - ${normalizedContent}`;
+        const fullMessage = `${replyPrefix} - ${body}`;
         payload =
           color && color !== "#FFFFFF"
             ? `${color}${name}${DEFAULT_CUBYZ_COLOR_RESET}: ${fullMessage}`
@@ -313,23 +344,52 @@ export class DiscordIntegration implements BaseIntegration {
 
       const guild = channel.guild;
 
-      const commandDefinition = {
-        name: "list",
-        description: "Show the players currently online in Cubyz.",
-      } as const;
+      const commandDefinitions: ChatInputApplicationCommandData[] = [
+        {
+          name: "list",
+          description: "Show the players currently online in Cubyz.",
+        },
+        // --- Account link (replies are ephemeral: only the user sees them) ---
+        {
+          name: "verify",
+          description:
+            "Link your game account: use the code from /link in game.",
+          options: [
+            {
+              type: ApplicationCommandOptionType.String,
+              name: "code",
+              description: "The code shown by /link in game",
+              required: true,
+            },
+          ],
+        },
+        {
+          name: "recover",
+          description:
+            "Lost your game account? Get a code to move it to a new one.",
+        },
+      ];
 
       const existingCommands = await guild.commands.fetch();
-      const existing = existingCommands.find(
-        (command: ApplicationCommand) =>
-          command.name === commandDefinition.name,
-      );
-
-      if (!existing) {
-        await guild.commands.create(commandDefinition);
-        this.log("info", "Registered /list slash command.");
-      } else if (existing.description !== commandDefinition.description) {
-        await guild.commands.edit(existing.id, commandDefinition);
-        this.log("info", "Updated /list slash command.");
+      for (const commandDefinition of commandDefinitions) {
+        const existing = existingCommands.find(
+          (command: ApplicationCommand) =>
+            command.name === commandDefinition.name,
+        );
+        if (!existing) {
+          await guild.commands.create(commandDefinition);
+          this.log(
+            "info",
+            `Registered /${commandDefinition.name} slash command.`,
+          );
+        } else if (
+          existing.description !== commandDefinition.description ||
+          (existing.options?.length ?? 0) !==
+            (commandDefinition.options?.length ?? 0)
+        ) {
+          await guild.commands.edit(existing.id, commandDefinition);
+          this.log("info", `Updated /${commandDefinition.name} slash command.`);
+        }
       }
     } catch (error) {
       this.log("error", "Failed to register slash command:", error);
@@ -402,6 +462,14 @@ export class DiscordIntegration implements BaseIntegration {
       return;
     }
 
+    if (
+      interaction.commandName === "verify" ||
+      interaction.commandName === "recover"
+    ) {
+      await this.handleAccountLinkCommand(interaction);
+      return;
+    }
+
     if (interaction.commandName !== "list") {
       return;
     }
@@ -430,6 +498,122 @@ export class DiscordIntegration implements BaseIntegration {
       this.log("error", "Failed to respond to /list slash command:", error);
     }
   };
+
+  // --- Account link / recovery (see the server's discordlink.zig) ---
+
+  private static readonly linkErrors: Record<string, string> = {
+    badCode: "That code is wrong or expired. Run /link in game for a new one.",
+    discordAlreadyLinked:
+      "Your Discord account is already linked to a game account. If you lost it, use /recover.",
+    accountAlreadyLinked:
+      "That game account is already linked to a Discord account.",
+    notLinked:
+      "Your Discord account isn't linked to a game account. Link one first: /link in game, then /verify here.",
+    badDiscordId: "Unexpected Discord account id.",
+    badArgument: "That code doesn't look right.",
+    timeout: "The game server didn't answer. Try again in a moment.",
+    offline: "The game server is offline right now. Try again later.",
+  };
+
+  private async handleAccountLinkCommand(
+    interaction: ChatInputCommandInteraction,
+  ): Promise<void> {
+    try {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    } catch (error) {
+      this.log("error", "Failed to defer account link reply:", error);
+      return;
+    }
+    const respond = async (content: string) => {
+      try {
+        await interaction.editReply({ content });
+      } catch (error) {
+        this.log("error", "Failed to answer account link command:", error);
+      }
+    };
+    if (!this.bot) {
+      await respond(DiscordIntegration.linkErrors.offline);
+      return;
+    }
+    const discordId = interaction.user.id;
+    const discordName = interaction.user.username.replace(/\s+/g, "_");
+
+    if (interaction.commandName === "verify") {
+      const code = interaction.options
+        .getString("code", true)
+        .replace(/[\s-]/g, "");
+      const reply = await this.bot.requestRelay("link", [
+        code,
+        discordId,
+        discordName,
+      ]);
+      if (reply.ok) {
+        await respond(
+          `Linked! Your Discord account is now linked to the game account **${reply.text}**.\nIf you ever lose access to it, use /recover here.`,
+        );
+      } else {
+        await respond(
+          DiscordIntegration.linkErrors[reply.text] ??
+            `Linking failed (${reply.text}).`,
+        );
+      }
+      return;
+    }
+
+    const reply = await this.bot.requestRelay("recover", [discordId]);
+    if (reply.ok) {
+      const [code, ...nameParts] = reply.text.split(" ");
+      await respond(
+        `Recovery code for **${nameParts.join(" ")}**: \`${code}\` (valid 15 minutes, keep it private).\n` +
+          "1. Join the server on your **new** account.\n" +
+          `2. Type \`/recover ${code}\` in game.\n` +
+          "3. Disconnect and rejoin. Your old progress moves to the new account and the old account is banned.",
+      );
+    } else {
+      await respond(
+        DiscordIntegration.linkErrors[reply.text] ??
+          `Recovery failed (${reply.text}).`,
+      );
+    }
+  }
+
+  /**
+   * A link/recovery code typed as plain text in the relay channel: don't relay
+   * it into the game chat, void the code (someone else could redeem it) and
+   * point to the private slash command. Returns true if handled.
+   */
+  private async guardPublicLinkCode(
+    content: string,
+    message: Message,
+  ): Promise<boolean> {
+    const match = /^[!/](verify|recover|link)\b\s*([A-Za-z0-9-]{8,9})?/i.exec(
+      content,
+    );
+    if (!match) return false;
+    const code = match[2]?.replace(/-/g, "");
+    if (code && this.bot) {
+      void this.bot.requestRelay("cancel", [code]);
+    }
+    try {
+      await message.delete();
+    } catch {
+      // Missing Manage Messages permission; the code is voided anyway.
+    }
+    try {
+      const channel = message.channel;
+      if ("send" in channel) {
+        await channel.send(
+          `<@${message.author.id}> please use the **/verify** or **/recover** slash command instead, so only you can see your code.` +
+            (code
+              ? " That code has been voided; run /link in game for a new one."
+              : ""),
+        );
+      }
+    } catch (error) {
+      this.log("error", "Failed to send link code warning:", error);
+    }
+    return true;
+  }
 
   private readonly handleReactionAdd = async (
     reaction: MessageReaction | PartialMessageReaction,

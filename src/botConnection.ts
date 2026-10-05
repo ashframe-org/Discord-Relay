@@ -51,6 +51,12 @@ type ConnectionState = "stopped" | "connecting" | "connected";
 
 const toNormalized = (value: string): string => value.toLowerCase();
 
+export interface RelayReply {
+  ok: boolean;
+  /** "ok" payload, or the error code for "err". */
+  text: string;
+}
+
 export class BotConnectionManager extends EventEmitter {
   private connection: CubyzConnection | null = null;
   private state: ConnectionState = "stopped";
@@ -61,6 +67,11 @@ export class BotConnectionManager extends EventEmitter {
   private readonly excludedNormalizedNames: Set<string>;
   private readonly parseMessage: (message: string) => ChatMessage | null;
   private readonly log: Logger;
+  /** Pending `/relay` requests, by request id (see requestRelay). */
+  private readonly relayRequests = new Map<
+    string,
+    { resolve: (reply: RelayReply) => void; timer: NodeJS.Timeout }
+  >();
 
   constructor(
     private readonly connectionConfig: CubyzConnectionConfig,
@@ -133,6 +144,39 @@ export class BotConnectionManager extends EventEmitter {
     this.emit("disconnected", { reason: "stopped" });
   }
 
+  /**
+   * Runs `/relay <sub> <req> <args...>` on the server (allowed only for this
+   * bot's account) and waits for its `[relay-reply] <req> ok|err ...` line.
+   * Arguments must not contain spaces.
+   */
+  async requestRelay(
+    sub: string,
+    args: readonly string[],
+  ): Promise<RelayReply> {
+    if (args.some((a) => a.length === 0 || /\s/.test(a))) {
+      return { ok: false, text: "badArgument" };
+    }
+    const req = Math.random().toString(36).slice(2, 10);
+    const result = new Promise<RelayReply>((resolve) => {
+      const timer = setTimeout(() => {
+        this.relayRequests.delete(req);
+        resolve({ ok: false, text: "timeout" });
+      }, 10_000);
+      this.relayRequests.set(req, { resolve, timer });
+    });
+    try {
+      await this.sendChat(`/relay ${sub} ${req} ${args.join(" ")}`);
+    } catch {
+      const pending = this.relayRequests.get(req);
+      if (pending) {
+        clearTimeout(pending.timer);
+        this.relayRequests.delete(req);
+      }
+      return { ok: false, text: "offline" };
+    }
+    return result;
+  }
+
   async sendChat(message: string): Promise<void> {
     const trimmed = message.trim();
     if (trimmed.length === 0) {
@@ -202,6 +246,19 @@ export class BotConnectionManager extends EventEmitter {
       return;
     }
 
+    // Answers to our own /relay commands (sent only to this bot): never relay.
+    const plain = trimmed.replace(/§?#[0-9a-fA-F]{6}/g, "");
+    const reply = /^\[relay-reply\] (\S+) (ok|err) ?(.*)$/.exec(plain);
+    if (reply) {
+      const pending = this.relayRequests.get(reply[1]);
+      if (pending) {
+        clearTimeout(pending.timer);
+        this.relayRequests.delete(reply[1]);
+        pending.resolve({ ok: reply[2] === "ok", text: reply[3].trim() });
+      }
+      return;
+    }
+
     const chatMessage = this.parseMessage(trimmed);
     if (chatMessage) {
       this.emitChatMessage(chatMessage);
@@ -212,7 +269,8 @@ export class BotConnectionManager extends EventEmitter {
 
   private readonly handlePlayers = (players: PlayersEvent): void => {
     const normalizedPlayers = players
-      .map((player) => cleanUsername(player.name))
+      // Titled nametags arrive as "[Title]\nName"; the name is the last line.
+      .map((player) => cleanUsername(player.name.split("\n").at(-1) ?? ""))
       .filter(Boolean);
 
     if (this.excludeBotFromCount) {

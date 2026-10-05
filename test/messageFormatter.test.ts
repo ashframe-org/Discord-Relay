@@ -1,6 +1,10 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import { cleanUsername, formatMessage } from "../src/messageFormatter.js";
+import {
+  cleanUsername,
+  formatMessage,
+  isBotUsername,
+} from "../src/messageFormatter.js";
 import type { ChatMessage, Config } from "../src/types.js";
 
 const baseConfig: Config = {
@@ -54,6 +58,21 @@ test("cleanUsername removes Cubyz markdown characters", () => {
   const raw = "user~_[]name";
   const cleaned = cleanUsername(raw);
   assert.equal(cleaned, "username");
+});
+
+test("cleanUsername strips a season badge tag", () => {
+  const raw = "§#9a9a9a[§#e6e6e6S2§#9a9a9a] §#cfcfcfDiscord";
+  const cleaned = cleanUsername(raw);
+  assert.equal(cleaned, "Discord");
+});
+
+test("isBotUsername matches the bot even when badge-decorated", () => {
+  assert.equal(isBotUsername("Discord", "discord"), true);
+  assert.equal(isBotUsername("S2 Discord", "discord"), true);
+  assert.equal(isBotUsername("adm Discord", "discord"), true);
+  assert.equal(isBotUsername("DiscordUser", "discord"), false);
+  assert.equal(isBotUsername("Someone", "discord"), false);
+  assert.equal(isBotUsername("Discord", ""), false);
 });
 
 test("cleanUsername removes disallowed punctuation", () => {
