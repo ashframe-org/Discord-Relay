@@ -5,6 +5,7 @@ import type { ChatMessage, Config } from "../types.js";
 import type { BaseIntegration, IntegrationStatusContext } from "./base.js";
 import { CubyzListSiteIntegration } from "./cubyzListSite.js";
 import { DiscordIntegration } from "./discord.js";
+import { ObsFileIntegration } from "./obsFile.js";
 
 interface IntegrationDependencies {
   bot: BotConnectionManager;
@@ -26,6 +27,10 @@ export function createIntegrations(
     const listIntegration = new CubyzListSiteIntegration(config);
     listIntegration.setBotConnection(dependencies.bot);
     integrations.push(listIntegration);
+  }
+
+  if (config.integration.obsFile.enabled) {
+    integrations.push(new ObsFileIntegration(config));
   }
 
   return integrations;

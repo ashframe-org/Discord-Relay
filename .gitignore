@@ -5,3 +5,10 @@ config.json
 *.log
 *.tsbuildinfo
 cubyz-identity.txt
+# Backups of config/identity can hold the bot token: never commit them.
+config.json*
+!config.example.json
+cubyz-identity.txt*
+*.bak
+*.bak-*
+*.bak.*
